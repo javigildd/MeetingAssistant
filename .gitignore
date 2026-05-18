@@ -1,0 +1,60 @@
+# Dependencies
+node_modules/
+.pnp.*
+.yarn/
+
+# Build artifacts
+dist/
+out/
+build/
+.vite/
+.turbo/
+*.tsbuildinfo
+
+# Swift
+.build/
+.swiftpm/
+*.xcodeproj/
+DerivedData/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# App data (recordings, DB, models) — NEVER commit
+data/
+recordings/
+meetings/
+*.wav
+*.m4a
+*.mp4
+*.sqlite
+*.sqlite-journal
+*.db
+
+# Secrets / settings
+.env
+.env.*
+!.env.example
+*.key
+openai_key.txt
+settings.local.json
+.claude/settings.local.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/

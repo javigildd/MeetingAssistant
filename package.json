@@ -1,0 +1,15 @@
+{
+  "name": "meetingassistant",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Local meeting recorder + transcriber + RAG chat for macOS",
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "build:recorder": "cd apps/recorder-helper && swift build -c release && mkdir -p ../desktop/resources/bin && cp .build/release/marec ../desktop/resources/bin/marec",
+    "dev": "npm -w apps/desktop run dev",
+    "build": "npm run build:recorder && npm -w apps/desktop run build",
+    "pipeline": "packages/pipeline/run.sh"
+  }
+}
