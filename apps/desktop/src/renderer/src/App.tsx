@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { Navigate, Route, Routes, useNavigate } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
+import CallToast from './components/CallToast'
 import Home from './routes/Home'
 import Recording from './routes/Recording'
 import MeetingDetail from './routes/MeetingDetail'
@@ -61,6 +62,7 @@ export default function App() {
           </Routes>
         </div>
       </main>
+      <CallToast />
     </div>
   )
 }

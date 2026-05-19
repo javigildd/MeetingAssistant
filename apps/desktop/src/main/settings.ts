@@ -13,7 +13,8 @@ const DEFAULTS: Settings = {
   computeType: 'int8',
   language: 'auto',
   hfToken: '',
-  dataDir: path.join(os.homedir(), 'MeetingAssistant')
+  dataDir: path.join(os.homedir(), 'MeetingAssistant'),
+  callDetectionEnabled: true
 }
 
 function settingsPath(): string {

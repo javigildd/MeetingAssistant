@@ -27,10 +27,13 @@ import {
 } from './recorder'
 import { runPipeline } from './pipeline'
 import { summarizeMeeting, embed, chat, chunkSegmentsForRag, EMBED_DIM } from './ai'
+import { CallDetector, type DetectedCall } from './callDetector'
 import type { Settings, ChatTurn } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
 const activeRecordings = new Map<string, RecorderSession>()
+let callDetector: CallDetector | null = null
+let lastCallList: DetectedCall[] = []
 
 /**
  * Runs WhisperX transcription + diarization, then (if an OpenAI key is set)
@@ -212,7 +215,19 @@ function emitToRenderer(event: string, payload: any) {
 function registerIpc(): void {
   // ----- settings
   ipcMain.handle('settings:get', () => loadSettings())
-  ipcMain.handle('settings:save', (_e, partial: Partial<Settings>) => saveSettings(partial))
+  ipcMain.handle('settings:save', (_e, partial: Partial<Settings>) => {
+    const next = saveSettings(partial)
+    // React to detection on/off toggle.
+    if (next.callDetectionEnabled === false) {
+      callDetector?.stop()
+      callDetector = null
+      lastCallList = []
+      emitToRenderer('call:update', { calls: [] })
+    } else if (!callDetector) {
+      startCallDetector()
+    }
+    return next
+  })
 
   // ----- meetings
   ipcMain.handle('meetings:list', () => listMeetings())
@@ -234,15 +249,31 @@ function registerIpc(): void {
   // ----- windows enumeration (for the meeting-window picker)
   ipcMain.handle('windows:list', () => listCapturableWindows())
 
+  // ----- call detection
+  ipcMain.handle('calls:current', () => lastCallList)
+  ipcMain.handle('calls:dismiss', (_e, key: string) => {
+    callDetector?.dismiss(key)
+    return true
+  })
+
   // ----- recording lifecycle
-  ipcMain.handle('recording:start', async (_e, opts?: { windowId?: number }) => {
+  ipcMain.handle('recording:start', async (
+    _e,
+    opts?: { windowId?: number; title?: string; callKey?: string }
+  ) => {
     const settings = loadSettings()
     const dataDir = ensureDataDir(settings)
     const meetingId = `${Date.now()}-${randomUUID().slice(0, 8)}`
     const session = startRecorder({ dataDir, meetingId, windowId: opts?.windowId })
     activeRecordings.set(meetingId, session)
-    const title = new Date().toLocaleString()
+    const title = opts?.title?.trim() || new Date().toLocaleString()
     createMeeting({ id: meetingId, title, meetingDir: session.meetingDir })
+
+    // Suppress the call-detected toast for the window we just started recording.
+    if (opts?.callKey) callDetector?.dismiss(opts.callKey)
+    // Clear any visible toasts while recording.
+    lastCallList = []
+    emitToRenderer('call:update', { calls: [] })
 
     session.events.on((evt) => {
       emitToRenderer('recorder:event', { meetingId, ...evt })
@@ -295,6 +326,18 @@ function registerIpc(): void {
 
 // ----------------------------------------------------------------- bootstrap
 
+function startCallDetector(): void {
+  if (callDetector) return
+  callDetector = new CallDetector((calls) => {
+    lastCallList = calls
+    // Suppress while a recording is active — no point offering to start a
+    // recording when one is already running.
+    const suppressed = activeRecordings.size > 0
+    emitToRenderer('call:update', { calls: suppressed ? [] : calls })
+  })
+  callDetector.start()
+}
+
 app.whenReady().then(() => {
   const settings = loadSettings()
   const dataDir = ensureDataDir(settings)
@@ -302,6 +345,9 @@ app.whenReady().then(() => {
   setEmbeddingDim(EMBED_DIM)
   registerIpc()
   createWindow()
+  if (settings.callDetectionEnabled !== false) {
+    startCallDetector()
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

@@ -109,6 +109,25 @@ export default function SettingsPage() {
         </Field>
       </Section>
 
+      <Section title="Call detection">
+        <Field
+          label="Detect calls automatically"
+          hint="Watches windows in the background and shows a small toast in the corner when a meeting starts (Zoom / Meet / Slack Huddle / WhatsApp / Teams / Webex / FaceTime). One click records that call."
+        >
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={draft.callDetectionEnabled !== false}
+              onChange={(e) => update('callDetectionEnabled', e.target.checked)}
+              className="w-4 h-4"
+            />
+            <span className="text-sm text-ink-200">
+              {draft.callDetectionEnabled !== false ? 'Enabled' : 'Disabled'}
+            </span>
+          </label>
+        </Field>
+      </Section>
+
       <Section title="Storage">
         <Field
           label="Data directory"

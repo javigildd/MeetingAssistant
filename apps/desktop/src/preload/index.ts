@@ -5,7 +5,8 @@ import type {
   MeetingSummary,
   ChatTurn,
   ChatCitation,
-  CapturableWindow
+  CapturableWindow,
+  DetectedCall
 } from '../shared/types'
 
 const api = {
@@ -27,10 +28,16 @@ const api = {
     delete: (id: string): Promise<Meeting | null> => ipcRenderer.invoke('meetings:delete', id)
   },
   recording: {
-    start: (opts?: { windowId?: number }): Promise<{ meetingId: string; windowId: number | null }> =>
+    start: (
+      opts?: { windowId?: number; title?: string; callKey?: string }
+    ): Promise<{ meetingId: string; windowId: number | null }> =>
       ipcRenderer.invoke('recording:start', opts),
     stop: (id: string): Promise<any> => ipcRenderer.invoke('recording:stop', id),
     active: (): Promise<string[]> => ipcRenderer.invoke('recording:active')
+  },
+  calls: {
+    current: (): Promise<DetectedCall[]> => ipcRenderer.invoke('calls:current'),
+    dismiss: (key: string): Promise<boolean> => ipcRenderer.invoke('calls:dismiss', key)
   },
   chat: {
     ask: (
@@ -58,6 +65,11 @@ const api = {
       const fn = (_: unknown, evt: any) => cb(evt)
       ipcRenderer.on('meeting:status', fn)
       return () => ipcRenderer.off('meeting:status', fn)
+    },
+    onCallUpdate: (cb: (evt: { calls: DetectedCall[] }) => void) => {
+      const fn = (_: unknown, evt: any) => cb(evt)
+      ipcRenderer.on('call:update', fn)
+      return () => ipcRenderer.off('call:update', fn)
     }
   }
 }

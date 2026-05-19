@@ -67,6 +67,8 @@ export interface Settings {
   language: 'auto' | 'es' | 'en'
   hfToken: string
   dataDir: string
+  /** When true, a toast appears in the corner when a call is detected. */
+  callDetectionEnabled: boolean
 }
 
 export type RecorderEvent =
@@ -84,4 +86,22 @@ export interface CapturableWindow {
   width: number
   height: number
   isLikelyMeeting: boolean
+}
+
+export interface DetectedCall {
+  key: string
+  windowId: number
+  platform:
+    | 'slack-huddle'
+    | 'zoom'
+    | 'google-meet'
+    | 'whatsapp'
+    | 'teams'
+    | 'facetime'
+    | 'webex'
+    | 'unknown'
+  appName: string
+  windowTitle: string
+  callerLabel: string | null
+  firstSeenAt: number
 }
