@@ -310,19 +310,26 @@ export interface RetrievalHit {
 export function retrieveSimilar(queryVec: number[], k = 8, meetingId?: string): RetrievalHit[] {
   const f32 = Float32Array.from(queryVec)
   if (vecAvailable) {
-    // vec0 MATCH doesn't compose well with WHERE filters on joined tables in
-    // some sqlite-vec versions, so over-fetch then filter in JS.
+    // sqlite-vec requires the LIMIT to live INSIDE the vec0 virtual table
+    // query — using it on the outer JOIN raises "A LIMIT or 'k = ?'
+    // constraint is required on vec0 knn queries". The fix is a CTE that
+    // does the kNN first, then JOINs.
     const overK = meetingId ? Math.max(k * 6, 50) : k
     const rows = getDb().prepare(`
+      WITH knn AS (
+        SELECT segment_id, distance
+        FROM vec_segments
+        WHERE embedding MATCH ?
+        ORDER BY distance ASC
+        LIMIT ?
+      )
       SELECT s.id AS segmentId, s.meeting_id AS meetingId, m.title AS meetingTitle,
              s.start, s."end" AS "end", s.speaker, s.text, s.idx AS segmentIndex,
-             v.distance AS distance
-      FROM vec_segments v
-      JOIN segments s ON s.id = v.segment_id
+             knn.distance AS distance
+      FROM knn
+      JOIN segments s ON s.id = knn.segment_id
       JOIN meetings m ON m.id = s.meeting_id
-      WHERE v.embedding MATCH ?
-      ORDER BY v.distance ASC
-      LIMIT ?
+      ORDER BY knn.distance ASC
     `).all(float32ToBuffer(f32), overK) as RetrievalHit[]
     const filtered = meetingId ? rows.filter((r) => r.meetingId === meetingId) : rows
     return filtered.slice(0, k)
