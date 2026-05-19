@@ -11,6 +11,9 @@ build/
 .turbo/
 *.tsbuildinfo
 
+# Generated recorder binary (built by `npm run build:recorder`)
+apps/desktop/resources/bin/
+
 # Swift
 .build/
 .swiftpm/
