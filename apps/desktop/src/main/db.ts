@@ -84,6 +84,24 @@ export function initDb(dataDir: string): Database.Database {
     `)
   }
 
+  // Heal meetings that were marked 'failed' but actually have a transcript
+  // saved (e.g. only the embedding step failed). They're fully usable.
+  handle.exec(`
+    UPDATE meetings
+    SET status = 'ready', error_message = NULL
+    WHERE status = 'failed'
+      AND id IN (SELECT meeting_id FROM segments)
+  `)
+
+  // Reset orphaned 'recording' / 'transcribing' / 'summarizing' statuses
+  // from previous crashed runs that have transcripts saved.
+  handle.exec(`
+    UPDATE meetings
+    SET status = 'ready'
+    WHERE status IN ('recording', 'transcribing', 'summarizing')
+      AND id IN (SELECT meeting_id FROM segments)
+  `)
+
   db = handle
   return handle
 }
@@ -264,9 +282,13 @@ export function insertEmbeddings(segmentIds: number[], vectors: number[][]): voi
   const tx = getDb().transaction(() => {
     for (let i = 0; i < segmentIds.length; i++) {
       const f32 = Float32Array.from(vectors[i])
-      stmt.run(segmentIds[i], float32ToBuffer(f32))
+      const buf = float32ToBuffer(f32)
+      stmt.run(segmentIds[i], buf)
       if (vecStmt) {
-        vecStmt.run(segmentIds[i], float32ToBuffer(f32))
+        // sqlite-vec's vec0 primary key MUST be bound as INTEGER, not REAL.
+        // better-sqlite3 sometimes binds plain JS numbers as REAL; passing a
+        // BigInt forces INTEGER binding.
+        vecStmt.run(BigInt(segmentIds[i]), buf)
       }
     }
   })

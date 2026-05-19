@@ -72,6 +72,7 @@ async function processMeeting(meetingId: string, meetingDir: string): Promise<vo
   updateMeetingStatus(meetingId, 'summarizing')
   emitToRenderer('meeting:status', { meetingId, status: 'summarizing' })
 
+  // 3a) Summary + action items
   try {
     const post = await summarizeMeeting({
       apiKey: settings.openaiKey,
@@ -89,23 +90,47 @@ async function processMeeting(meetingId: string, meetingDir: string): Promise<vo
       topics: post.topics
     })
     if (post.title) updateMeetingTitle(meetingId, post.title)
+  } catch (err) {
+    // Summary failed but transcript is fine — keep the meeting usable.
+    const msg = (err as Error).message
+    console.warn('[summary] failed for', meetingId, msg)
+    finalizeMeeting({
+      id: meetingId,
+      endedAt: Date.now(),
+      duration: transcript.meta.duration,
+      language: transcript.meta.language,
+      summaryMd: null,
+      actionItems: [],
+      decisions: [],
+      topics: []
+    })
+    emitToRenderer('meeting:status', {
+      meetingId,
+      status: 'ready',
+      warning: `Summary failed: ${msg}. Transcript is saved.`
+    })
+  }
 
-    // 4) Embed chunks for RAG
+  // 3b) Embed chunks for RAG — separate try so failures here don't kill
+  // the whole meeting. Without embeddings, global/per-meeting chat won't
+  // see this meeting, but the transcript and summary are still usable.
+  try {
     const chunks = chunkSegmentsForRag(transcript.segments)
     setEmbeddingDim(EMBED_DIM)
-    const vectors = await embed(
-      settings.openaiKey,
-      chunks.map((c) => c.text)
-    )
+    const vectors = await embed(settings.openaiKey, chunks.map((c) => c.text))
     const segmentRowIds = chunks.map((c) => segmentIds[c.segmentIdx])
     insertEmbeddings(segmentRowIds, vectors)
-
-    emitToRenderer('meeting:status', { meetingId, status: 'ready' })
   } catch (err) {
     const msg = (err as Error).message
-    updateMeetingStatus(meetingId, 'failed', msg)
-    emitToRenderer('meeting:status', { meetingId, status: 'failed', error: msg })
+    console.warn('[embed] failed for', meetingId, msg)
+    emitToRenderer('meeting:status', {
+      meetingId,
+      status: 'ready',
+      warning: `Chat indexing failed: ${msg}. Transcript and summary are saved.`
+    })
   }
+
+  emitToRenderer('meeting:status', { meetingId, status: 'ready' })
 }
 
 function createWindow(): void {
