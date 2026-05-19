@@ -285,9 +285,12 @@ export interface RetrievalHit {
   segmentIndex: number
 }
 
-export function retrieveSimilar(queryVec: number[], k = 8): RetrievalHit[] {
+export function retrieveSimilar(queryVec: number[], k = 8, meetingId?: string): RetrievalHit[] {
   const f32 = Float32Array.from(queryVec)
   if (vecAvailable) {
+    // vec0 MATCH doesn't compose well with WHERE filters on joined tables in
+    // some sqlite-vec versions, so over-fetch then filter in JS.
+    const overK = meetingId ? Math.max(k * 6, 50) : k
     const rows = getDb().prepare(`
       SELECT s.id AS segmentId, s.meeting_id AS meetingId, m.title AS meetingTitle,
              s.start, s."end" AS "end", s.speaker, s.text, s.idx AS segmentIndex,
@@ -298,19 +301,30 @@ export function retrieveSimilar(queryVec: number[], k = 8): RetrievalHit[] {
       WHERE v.embedding MATCH ?
       ORDER BY v.distance ASC
       LIMIT ?
-    `).all(float32ToBuffer(f32), k) as RetrievalHit[]
-    return rows
+    `).all(float32ToBuffer(f32), overK) as RetrievalHit[]
+    const filtered = meetingId ? rows.filter((r) => r.meetingId === meetingId) : rows
+    return filtered.slice(0, k)
   }
 
   // Fallback: brute-force cosine over all embeddings.
-  const rows = getDb().prepare(`
-    SELECT e.segment_id AS segmentId, e.vector AS vector,
-           s.meeting_id AS meetingId, m.title AS meetingTitle,
-           s.start, s."end" AS "end", s.speaker, s.text, s.idx AS segmentIndex
-    FROM embeddings e
-    JOIN segments s ON s.id = e.segment_id
-    JOIN meetings m ON m.id = s.meeting_id
-  `).all() as any[]
+  const rows = (meetingId
+    ? getDb().prepare(`
+        SELECT e.segment_id AS segmentId, e.vector AS vector,
+               s.meeting_id AS meetingId, m.title AS meetingTitle,
+               s.start, s."end" AS "end", s.speaker, s.text, s.idx AS segmentIndex
+        FROM embeddings e
+        JOIN segments s ON s.id = e.segment_id
+        JOIN meetings m ON m.id = s.meeting_id
+        WHERE s.meeting_id = ?
+      `).all(meetingId)
+    : getDb().prepare(`
+        SELECT e.segment_id AS segmentId, e.vector AS vector,
+               s.meeting_id AS meetingId, m.title AS meetingTitle,
+               s.start, s."end" AS "end", s.speaker, s.text, s.idx AS segmentIndex
+        FROM embeddings e
+        JOIN segments s ON s.id = e.segment_id
+        JOIN meetings m ON m.id = s.meeting_id
+      `).all()) as any[]
 
   const qNorm = norm(f32)
   const scored = rows.map((r) => {
@@ -336,19 +350,35 @@ function norm(a: Float32Array): number {
 
 // ----------------------------------------------------------------------- FTS
 
-export function searchText(query: string, k = 8): RetrievalHit[] {
+export function searchText(query: string, k = 8, meetingId?: string): RetrievalHit[] {
   // Sanitize fts5 query — escape stray quotes.
   const safe = query.replace(/"/g, '""')
-  const rows = getDb().prepare(`
-    SELECT s.id AS segmentId, s.meeting_id AS meetingId, m.title AS meetingTitle,
-           s.start, s."end" AS "end", s.speaker, s.text, s.idx AS segmentIndex,
-           bm25(segments_fts) AS distance
-    FROM segments_fts
-    JOIN segments s ON s.id = segments_fts.rowid
-    JOIN meetings m ON m.id = s.meeting_id
-    WHERE segments_fts MATCH ?
-    ORDER BY distance ASC
-    LIMIT ?
-  `).all(`"${safe}"`, k) as RetrievalHit[]
+  const sql = meetingId
+    ? `
+      SELECT s.id AS segmentId, s.meeting_id AS meetingId, m.title AS meetingTitle,
+             s.start, s."end" AS "end", s.speaker, s.text, s.idx AS segmentIndex,
+             bm25(segments_fts) AS distance
+      FROM segments_fts
+      JOIN segments s ON s.id = segments_fts.rowid
+      JOIN meetings m ON m.id = s.meeting_id
+      WHERE segments_fts MATCH ? AND s.meeting_id = ?
+      ORDER BY distance ASC
+      LIMIT ?
+    `
+    : `
+      SELECT s.id AS segmentId, s.meeting_id AS meetingId, m.title AS meetingTitle,
+             s.start, s."end" AS "end", s.speaker, s.text, s.idx AS segmentIndex,
+             bm25(segments_fts) AS distance
+      FROM segments_fts
+      JOIN segments s ON s.id = segments_fts.rowid
+      JOIN meetings m ON m.id = s.meeting_id
+      WHERE segments_fts MATCH ?
+      ORDER BY distance ASC
+      LIMIT ?
+    `
+  const stmt = getDb().prepare(sql)
+  const rows = (meetingId
+    ? stmt.all(`"${safe}"`, meetingId, k)
+    : stmt.all(`"${safe}"`, k)) as RetrievalHit[]
   return rows
 }

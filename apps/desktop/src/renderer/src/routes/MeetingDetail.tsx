@@ -4,9 +4,10 @@ import type { Meeting } from '../../../shared/types'
 import TranscriptView from '../components/TranscriptView'
 import SpeakerChip from '../components/SpeakerChip'
 import Markdown from '../components/Markdown'
+import ChatPanel from '../components/ChatPanel'
 import { refreshMeetings, useStore } from '../store'
 
-type Tab = 'summary' | 'transcript' | 'actions'
+type Tab = 'summary' | 'transcript' | 'actions' | 'chat'
 
 export default function MeetingDetail() {
   const { id } = useParams<{ id: string }>()
@@ -132,7 +133,7 @@ export default function MeetingDetail() {
       )}
 
       <nav className="flex gap-1 mb-6 border-b border-white/5">
-        {(['summary', 'transcript', 'actions'] as Tab[]).map((t) => (
+        {(['summary', 'transcript', 'actions', 'chat'] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -143,7 +144,7 @@ export default function MeetingDetail() {
                 : 'border-transparent text-ink-400 hover:text-ink-200')
             }
           >
-            {t}
+            {t === 'chat' ? '💬 Chat' : t}
           </button>
         ))}
       </nav>
@@ -220,6 +221,25 @@ export default function MeetingDetail() {
               </div>
             ))
           )}
+        </div>
+      )}
+
+      {tab === 'chat' && (
+        <div className="rounded-xl border border-white/5 bg-ink-800/40 p-4">
+          <div className="text-xs text-ink-400 mb-2">
+            Ask anything about this meeting. Sources will cite segments from this conversation
+            only.
+          </div>
+          <ChatPanel
+            meetingId={meeting.id}
+            placeholder={`Ask about "${meeting.title}"…`}
+            compact
+            hints={[
+              'What were the key decisions?',
+              'Summarize this in 3 bullets',
+              'What did I commit to do?'
+            ]}
+          />
         </div>
       )}
     </div>

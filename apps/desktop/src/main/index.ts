@@ -204,12 +204,12 @@ function registerIpc(): void {
   ipcMain.handle('recording:active', () => Array.from(activeRecordings.keys()))
 
   // ----- chat
-  ipcMain.handle('chat:ask', async (_e, history: ChatTurn[], question: string) => {
+  ipcMain.handle('chat:ask', async (_e, history: ChatTurn[], question: string, meetingId?: string) => {
     const settings = loadSettings()
     if (!settings.openaiKey?.trim()) {
       throw new Error('Set your OpenAI API key in Settings first.')
     }
-    return chat({ apiKey: settings.openaiKey, history, question })
+    return chat({ apiKey: settings.openaiKey, history, question, meetingId })
   })
 
   // ----- shell utilities

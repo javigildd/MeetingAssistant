@@ -22,8 +22,12 @@ const api = {
     active: (): Promise<string[]> => ipcRenderer.invoke('recording:active')
   },
   chat: {
-    ask: (history: ChatTurn[], q: string): Promise<{ answer: string; citations: ChatCitation[] }> =>
-      ipcRenderer.invoke('chat:ask', history, q)
+    ask: (
+      history: ChatTurn[],
+      q: string,
+      meetingId?: string
+    ): Promise<{ answer: string; citations: ChatCitation[] }> =>
+      ipcRenderer.invoke('chat:ask', history, q, meetingId)
   },
   shell: {
     openFolder: (p: string): Promise<string> => ipcRenderer.invoke('shell:openFolder', p)

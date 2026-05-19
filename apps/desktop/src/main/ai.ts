@@ -198,13 +198,15 @@ export async function chat(args: {
   apiKey: string
   history: ChatTurn[]
   question: string
+  /** If set, retrieval is scoped to a single meeting (per-meeting Q&A). */
+  meetingId?: string
 }): Promise<{ answer: string; citations: ChatCitation[] }> {
   const oai = client(args.apiKey)
 
-  // 1) Embed question and retrieve.
+  // 1) Embed question and retrieve. Scope to a meeting if requested.
   const [qVec] = await embed(args.apiKey, [args.question])
-  const dense = retrieveSimilar(qVec, 8)
-  const sparse = searchText(args.question, 4).filter(
+  const dense = retrieveSimilar(qVec, 8, args.meetingId)
+  const sparse = searchText(args.question, 4, args.meetingId).filter(
     (r) => !dense.some((d) => d.segmentId === r.segmentId)
   )
   const hits = [...dense, ...sparse].slice(0, 10)
@@ -213,20 +215,24 @@ export async function chat(args: {
   const ctx = hits
     .map(
       (h, i) =>
-        `[${i + 1}] ${h.meetingTitle} (${new Date(0).toISOString()}) — ${h.speaker} @ ${formatTs(h.start)}:\n"${h.text}"`
+        `[${i + 1}] ${h.meetingTitle} — ${h.speaker} @ ${formatTs(h.start)}:\n"${h.text}"`
     )
     .join('\n\n')
 
-  const system = `You are a helpful assistant who answers questions about the user's past meetings.
+  const scopeLine = args.meetingId
+    ? 'You are answering questions about ONE specific meeting whose context is below.'
+    : `You answer questions about the user's past meetings.`
+
+  const system = `${scopeLine}
 The user is the "You" speaker. Other speakers are Speaker_A/B/... unless the user has renamed them.
-Always answer concisely. Cite the meetings you used with [1], [2], etc. matching the numbered context blocks below.
+Always answer concisely. Cite the segments you used with [1], [2], etc. matching the numbered context blocks below.
 If the answer is not in the provided context, say so. Do not invent quotes.`
 
   const messages: any[] = [
     { role: 'system', content: system },
     {
       role: 'user',
-      content: `Context from past meetings:\n\n${ctx || '(no matching context found)'}\n\nQuestion: ${args.question}`
+      content: `Context:\n\n${ctx || '(no matching context found)'}\n\nQuestion: ${args.question}`
     }
   ]
   // Add prior conversation turns (last 4)
