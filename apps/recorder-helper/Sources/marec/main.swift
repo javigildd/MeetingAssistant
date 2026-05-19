@@ -2,14 +2,21 @@ import Foundation
 import AVFoundation
 import ScreenCaptureKit
 import CoreMedia
+import CoreImage
+import AppKit
 
 // marec — MeetingAssistant recorder
-// Captures system audio (via ScreenCaptureKit) + microphone (via AVAudioEngine)
-// into two separate 16kHz mono PCM16 WAV files. Press Ctrl+C / send SIGINT to stop.
 //
-// Usage: marec --output-dir <path>
+// Modes:
+//   marec --list-windows
+//     Prints a JSON array of capturable windows to stdout and exits.
 //
-// On stdout it prints newline-delimited JSON status messages so the Electron
+//   marec --output-dir <path> [--window-id <id>]
+//     Records system audio + microphone into <path>/system.wav and
+//     <path>/mic.wav. If --window-id is given, also captures 1fps frames of
+//     that window into <path>/frames/<ms>.jpg. SIGINT to stop.
+//
+// All status messages are newline-delimited JSON on stdout so the Electron
 // host can track lifecycle.
 
 // MARK: - JSON helpers
@@ -48,23 +55,20 @@ final class WavWriter {
 
     private func writeHeader() throws {
         var header = Data()
-        // RIFF chunk
         header.append("RIFF".data(using: .ascii)!)
-        header.append(uint32LE(0))                  // file size - 8, patched on close
+        header.append(uint32LE(0))
         header.append("WAVE".data(using: .ascii)!)
-        // fmt chunk
         header.append("fmt ".data(using: .ascii)!)
-        header.append(uint32LE(16))                  // PCM fmt chunk size
-        header.append(uint16LE(1))                   // PCM format
+        header.append(uint32LE(16))
+        header.append(uint16LE(1))
         header.append(uint16LE(channels))
         header.append(uint32LE(sampleRate))
         let byteRate = sampleRate * UInt32(channels) * UInt32(bitsPerSample / 8)
         header.append(uint32LE(byteRate))
         header.append(uint16LE(channels * bitsPerSample / 8))
         header.append(uint16LE(bitsPerSample))
-        // data chunk header
         header.append("data".data(using: .ascii)!)
-        header.append(uint32LE(0))                   // data size, patched on close
+        header.append(uint32LE(0))
         try handle.write(contentsOf: header)
     }
 
@@ -76,7 +80,6 @@ final class WavWriter {
     }
 
     func close() {
-        // Patch RIFF size and data size.
         let fileSizeMinus8 = 36 + dataBytes
         try? handle.seek(toOffset: 4)
         try? handle.write(contentsOf: uint32LE(fileSizeMinus8))
@@ -95,7 +98,7 @@ final class WavWriter {
     }
 }
 
-// MARK: - Resampler / converter (Float -> Int16, any -> 16k mono)
+// MARK: - Resampler (Float -> Int16, any -> 16k mono)
 
 final class Resampler {
     private let converter: AVAudioConverter
@@ -114,9 +117,7 @@ final class Resampler {
         self.outFormat = target
     }
 
-    /// Convert and call back with Int16 samples.
     func convert(buffer: AVAudioPCMBuffer, onSamples: (UnsafePointer<Int16>, Int) -> Void) {
-        // Estimate capacity (allow generous slack for resampling).
         let ratio = outFormat.sampleRate / buffer.format.sampleRate
         let cap = AVAudioFrameCount(Double(buffer.frameLength) * ratio + 1024)
         guard let outBuf = AVAudioPCMBuffer(pcmFormat: outFormat, frameCapacity: cap) else { return }
@@ -133,33 +134,28 @@ final class Resampler {
         }
         var err: NSError?
         _ = converter.convert(to: outBuf, error: &err, withInputFrom: block)
-        if let e = err {
-            FileHandle.standardError.write("convert error: \(e.localizedDescription)\n".data(using: .utf8)!)
-            return
-        }
+        if err != nil { return }
         if outBuf.frameLength == 0 { return }
         guard let ptr = outBuf.int16ChannelData?[0] else { return }
         onSamples(ptr, Int(outBuf.frameLength))
     }
 }
 
-// MARK: - Mic capture (AVAudioEngine)
+// MARK: - Mic capture
 
 final class MicCapture {
     private let engine = AVAudioEngine()
     private let writer: WavWriter
     private var resampler: Resampler?
 
-    init(writer: WavWriter) {
-        self.writer = writer
-    }
+    init(writer: WavWriter) { self.writer = writer }
 
     func start() throws {
         let input = engine.inputNode
         let inFormat = input.outputFormat(forBus: 0)
         guard inFormat.sampleRate > 0 else {
             throw NSError(domain: "marec.mic", code: 1, userInfo: [
-                NSLocalizedDescriptionKey: "No microphone input available (sampleRate=0). Grant Microphone permission in System Settings > Privacy."
+                NSLocalizedDescriptionKey: "No microphone input available. Grant Microphone permission."
             ])
         }
         guard let r = Resampler(inFormat: inFormat) else {
@@ -183,16 +179,14 @@ final class MicCapture {
     }
 }
 
-// MARK: - System capture (ScreenCaptureKit)
+// MARK: - System audio capture (SCStream, display-wide filter)
 
-final class SystemCapture: NSObject, SCStreamOutput, SCStreamDelegate {
+final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private let writer: WavWriter
     private var stream: SCStream?
     private var resampler: Resampler?
 
-    init(writer: WavWriter) {
-        self.writer = writer
-    }
+    init(writer: WavWriter) { self.writer = writer }
 
     func start() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
@@ -210,7 +204,6 @@ final class SystemCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         cfg.excludesCurrentProcessAudio = true
         cfg.sampleRate = 48_000
         cfg.channelCount = 2
-        // Minimize video work — we only want audio.
         cfg.width = 2
         cfg.height = 2
         cfg.minimumFrameInterval = CMTime(value: 1, timescale: 1)
@@ -218,7 +211,6 @@ final class SystemCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 
         let s = SCStream(filter: filter, configuration: cfg, delegate: self)
         try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "marec.audio"))
-        // We must add a screen output too (SCKit requirement on some macOS versions).
         try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "marec.video"))
         try await s.startCapture()
         self.stream = s
@@ -230,8 +222,6 @@ final class SystemCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         }
         writer.close()
     }
-
-    // MARK: SCStreamOutput
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .audio else { return }
@@ -245,7 +235,6 @@ final class SystemCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         guard let buf = AVAudioPCMBuffer(pcmFormat: inFormat, frameCapacity: frames) else { return }
         buf.frameLength = frames
 
-        // Copy the audio data out of the CMSampleBuffer's block buffer.
         guard let blockBuf = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
         var lengthOut = 0
         var dataPtr: UnsafeMutablePointer<Int8>?
@@ -277,36 +266,178 @@ final class SystemCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 }
 
+// MARK: - Window video capture (SCStream, single window filter)
+
+/// Captures one window's framebuffer at ~1 fps and writes JPEG snapshots
+/// named `frames/<ms_since_start>.jpg`. Works while the window is in the
+/// background (Zoom/Meet keep rendering during a call).
+final class WindowVideoCapture: NSObject, SCStreamOutput, SCStreamDelegate {
+    private let framesDir: URL
+    private let startEpoch: Date
+    private var stream: SCStream?
+    private let ciContext = CIContext()
+    private var lastSavedMs: Int64 = -10_000
+    private let intervalMs: Int64
+
+    init(framesDir: URL, startEpoch: Date, intervalSeconds: Double = 2.0) {
+        self.framesDir = framesDir
+        self.startEpoch = startEpoch
+        self.intervalMs = Int64(intervalSeconds * 1000.0)
+    }
+
+    func start(windowID: CGWindowID) async throws {
+        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+        guard let target = content.windows.first(where: { $0.windowID == windowID }) else {
+            throw NSError(domain: "marec.video", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "Window id \(windowID) not found among shareable windows."
+            ])
+        }
+
+        let filter = SCContentFilter(desktopIndependentWindow: target)
+
+        let cfg = SCStreamConfiguration()
+        cfg.capturesAudio = false
+        cfg.width = max(640, Int(target.frame.width))
+        cfg.height = max(360, Int(target.frame.height))
+        // Cap at a reasonable size to keep JPEGs small.
+        if cfg.width > 1600 { cfg.width = 1600 }
+        if cfg.height > 1000 { cfg.height = 1000 }
+        cfg.scalesToFit = true
+        cfg.minimumFrameInterval = CMTime(value: 1, timescale: 2) // request 2fps, we save every ~intervalSeconds
+        cfg.queueDepth = 5
+        cfg.pixelFormat = kCVPixelFormatType_32BGRA
+
+        let s = SCStream(filter: filter, configuration: cfg, delegate: self)
+        try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "marec.window"))
+        try await s.startCapture()
+        self.stream = s
+    }
+
+    func stop() async {
+        if let s = stream {
+            try? await s.stopCapture()
+        }
+    }
+
+    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        guard type == .screen else { return }
+        guard CMSampleBufferDataIsReady(sampleBuffer) else { return }
+        let nowMs = Int64(Date().timeIntervalSince(startEpoch) * 1000.0)
+        if nowMs - lastSavedMs < intervalMs { return }
+        lastSavedMs = nowMs
+
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let ciImage = CIImage(cvImageBuffer: pixelBuffer)
+        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return }
+        let bitmap = NSBitmapImageRep(cgImage: cgImage)
+        guard let data = bitmap.representation(using: .jpeg, properties: [.compressionFactor: 0.6]) else { return }
+
+        let name = String(format: "%010d.jpg", nowMs)
+        let url = framesDir.appendingPathComponent(name)
+        try? data.write(to: url)
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        emit(["status": "video_stream_error", "message": error.localizedDescription])
+    }
+}
+
+// MARK: - Window enumeration
+
+func listWindowsAndExit() async -> Never {
+    do {
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        var out: [[String: Any]] = []
+        for w in content.windows {
+            // Skip windows with no title and no app — likely UI helpers.
+            let title = w.title ?? ""
+            let appName = w.owningApplication?.applicationName ?? ""
+            if title.isEmpty && appName.isEmpty { continue }
+            if w.frame.width < 200 || w.frame.height < 200 { continue }
+            out.append([
+                "id": w.windowID,
+                "app": appName,
+                "title": title,
+                "bundleId": w.owningApplication?.bundleIdentifier ?? "",
+                "width": Int(w.frame.width),
+                "height": Int(w.frame.height)
+            ])
+        }
+        let payload: [String: Any] = ["windows": out]
+        if let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+           let str = String(data: data, encoding: .utf8) {
+            print(str)
+        }
+        exit(0)
+    } catch {
+        let payload: [String: Any] = [
+            "windows": [],
+            "error": error.localizedDescription
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: payload, options: []),
+           let str = String(data: data, encoding: .utf8) {
+            print(str)
+        }
+        exit(1)
+    }
+}
+
 // MARK: - CLI
 
-func parseArgs() -> URL {
+struct CliArgs {
+    var listWindows = false
     var outputDir: String?
+    var windowID: CGWindowID?
+}
+
+func parseArgs() -> CliArgs {
+    var args = CliArgs()
     var i = 1
-    let args = CommandLine.arguments
-    while i < args.count {
-        switch args[i] {
+    let arr = CommandLine.arguments
+    while i < arr.count {
+        switch arr[i] {
+        case "--list-windows":
+            args.listWindows = true
         case "--output-dir":
             i += 1
-            if i < args.count { outputDir = args[i] }
+            if i < arr.count { args.outputDir = arr[i] }
+        case "--window-id":
+            i += 1
+            if i < arr.count, let id = UInt32(arr[i]) {
+                args.windowID = CGWindowID(id)
+            }
         case "-h", "--help":
-            print("Usage: marec --output-dir <path>")
-            print("Records system audio + microphone to <path>/system.wav and <path>/mic.wav.")
-            print("Send SIGINT (Ctrl+C) to stop.")
+            print("Usage:")
+            print("  marec --list-windows")
+            print("  marec --output-dir <path> [--window-id <id>]")
             exit(0)
         default:
             break
         }
         i += 1
     }
-    guard let dir = outputDir else { fail("--output-dir is required") }
-    let url = URL(fileURLWithPath: (dir as NSString).expandingTildeInPath)
-    try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-    return url
+    return args
 }
 
-let outDir = parseArgs()
+let cli = parseArgs()
+
+if cli.listWindows {
+    Task {
+        await listWindowsAndExit()
+    }
+    dispatchMain()
+}
+
+guard let dir = cli.outputDir else {
+    fail("--output-dir is required (or use --list-windows)")
+}
+
+let outDir = URL(fileURLWithPath: (dir as NSString).expandingTildeInPath)
+try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
 let micURL = outDir.appendingPathComponent("mic.wav")
 let sysURL = outDir.appendingPathComponent("system.wav")
+let framesDir = outDir.appendingPathComponent("frames")
 
 let micWriter: WavWriter
 let sysWriter: WavWriter
@@ -318,15 +449,23 @@ do {
 }
 
 let mic = MicCapture(writer: micWriter)
-let sys = SystemCapture(writer: sysWriter)
+let sysCap = SystemAudioCapture(writer: sysWriter)
 
-emit(["status": "starting", "outputDir": outDir.path, "pid": ProcessInfo.processInfo.processIdentifier])
+var videoCap: WindowVideoCapture?
+if cli.windowID != nil {
+    try? FileManager.default.createDirectory(at: framesDir, withIntermediateDirectories: true)
+    videoCap = WindowVideoCapture(framesDir: framesDir, startEpoch: Date(), intervalSeconds: 2.0)
+}
+
+emit([
+    "status": "starting",
+    "outputDir": outDir.path,
+    "windowId": cli.windowID.map { Int($0) } as Any,
+    "pid": ProcessInfo.processInfo.processIdentifier
+])
 
 let startedAt = Date()
-let group = DispatchGroup()
-let runLoopSem = DispatchSemaphore(value: 0)
 
-// Start mic synchronously.
 do {
     try mic.start()
     emit(["status": "mic_started"])
@@ -334,19 +473,24 @@ do {
     fail("mic start failed: \(error.localizedDescription)")
 }
 
-// Start system capture async.
 Task {
     do {
-        try await sys.start()
+        try await sysCap.start()
         emit(["status": "system_started"])
-        emit(["status": "recording"])
     } catch {
         emit(["status": "system_start_failed", "message": error.localizedDescription])
-        // Continue recording mic only — degrade gracefully.
     }
+    if let v = videoCap, let wid = cli.windowID {
+        do {
+            try await v.start(windowID: wid)
+            emit(["status": "video_started", "windowId": Int(wid)])
+        } catch {
+            emit(["status": "video_start_failed", "message": error.localizedDescription])
+        }
+    }
+    emit(["status": "recording"])
 }
 
-// SIGINT handler: stop cleanly, write headers, exit.
 let sigSrc = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
 let sigTerm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
 signal(SIGINT, SIG_IGN)
@@ -356,14 +500,19 @@ let stopHandler: () -> Void = {
     emit(["status": "stopping"])
     mic.stop()
     Task {
-        await sys.stop()
+        await sysCap.stop()
+        if let v = videoCap { await v.stop() }
         let duration = Date().timeIntervalSince(startedAt)
-        emit([
+        var payload: [String: Any] = [
             "status": "done",
             "mic": micURL.path,
             "system": sysURL.path,
             "duration": duration
-        ])
+        ]
+        if cli.windowID != nil {
+            payload["frames"] = framesDir.path
+        }
+        emit(payload)
         exit(0)
     }
 }
@@ -372,5 +521,4 @@ sigTerm.setEventHandler(handler: stopHandler)
 sigSrc.resume()
 sigTerm.resume()
 
-// Block forever until SIGINT.
 dispatchMain()

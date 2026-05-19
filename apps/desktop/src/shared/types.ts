@@ -75,3 +75,13 @@ export type RecorderEvent =
   | { type: 'pipeline-progress'; meetingId: string; stage: string; message?: string }
   | { type: 'ready'; meetingId: string }
   | { type: 'failed'; meetingId: string; message: string }
+
+export interface CapturableWindow {
+  id: number
+  app: string
+  title: string
+  bundleId: string
+  width: number
+  height: number
+  isLikelyMeeting: boolean
+}

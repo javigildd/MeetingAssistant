@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
 import { app } from 'electron'
@@ -9,7 +9,34 @@ export interface RecorderSession {
   startedAt: number
   process: ChildProcess
   events: AsyncEventBus
+  windowId?: number
 }
+
+export interface CapturableWindow {
+  id: number
+  app: string
+  title: string
+  bundleId: string
+  width: number
+  height: number
+  /** Heuristic: looks like a videoconferencing window */
+  isLikelyMeeting: boolean
+}
+
+const MEETING_BUNDLES = new Set([
+  'us.zoom.xos', // Zoom desktop
+  'us.zoom.ZoomClips',
+  'com.microsoft.teams',
+  'com.microsoft.teams2',
+  'com.tinyspeck.slackmacgap', // Slack
+  'com.apple.FaceTime',
+  'WhatsApp',
+  'net.whatsapp.WhatsApp',
+  'com.google.Meet',
+  'com.webex.meetingmanager'
+])
+
+const MEETING_TITLE_RX = /\b(meet|zoom|teams|huddle|whatsapp|webex|hangouts|jitsi)\b/i
 
 /** Simple event bus that pushes lines from stdout. */
 export class AsyncEventBus {
@@ -54,15 +81,50 @@ function resolveRecorderPath(): string {
   )
 }
 
+/** List all shareable windows by invoking `marec --list-windows`. */
+export function listCapturableWindows(): CapturableWindow[] {
+  let binary: string
+  try {
+    binary = resolveRecorderPath()
+  } catch {
+    return []
+  }
+  const res = spawnSync(binary, ['--list-windows'], { encoding: 'utf8' })
+  if (res.status !== 0) return []
+  try {
+    const parsed = JSON.parse(res.stdout.trim() || '{}') as { windows?: CapturableWindow[] }
+    const list = parsed.windows || []
+    return list
+      .map((w) => ({
+        ...w,
+        isLikelyMeeting:
+          MEETING_BUNDLES.has(w.bundleId) ||
+          MEETING_TITLE_RX.test(w.title) ||
+          MEETING_TITLE_RX.test(w.app)
+      }))
+      .sort((a, b) => {
+        if (a.isLikelyMeeting !== b.isLikelyMeeting) return a.isLikelyMeeting ? -1 : 1
+        return a.app.localeCompare(b.app)
+      })
+  } catch {
+    return []
+  }
+}
+
 export function startRecorder(args: {
   dataDir: string
   meetingId: string
+  windowId?: number
 }): RecorderSession {
   const meetingDir = path.join(args.dataDir, 'meetings', args.meetingId)
   fs.mkdirSync(meetingDir, { recursive: true })
 
   const binary = resolveRecorderPath()
-  const child = spawn(binary, ['--output-dir', meetingDir], {
+  const cliArgs = ['--output-dir', meetingDir]
+  if (args.windowId) {
+    cliArgs.push('--window-id', String(args.windowId))
+  }
+  const child = spawn(binary, cliArgs, {
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -101,7 +163,8 @@ export function startRecorder(args: {
     meetingDir,
     startedAt: Date.now(),
     process: child,
-    events
+    events,
+    windowId: args.windowId
   }
 }
 

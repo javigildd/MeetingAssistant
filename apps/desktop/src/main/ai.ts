@@ -46,9 +46,15 @@ export async function summarizeMeeting(args: {
   apiKey: string
   language: string
   segments: Segment[]
+  /** Optional map of cluster label → real name. Applied before building
+   * the transcript so the LLM sees "María said..." instead of "Speaker_A said...". */
+  speakerAliases?: Record<string, string>
 }): Promise<PostProcessResult> {
   const oai = client(args.apiKey)
-  const transcript = transcriptAsText(args.segments)
+  const labeled = args.speakerAliases
+    ? args.segments.map((s) => ({ ...s, speaker: args.speakerAliases![s.speaker] || s.speaker }))
+    : args.segments
+  const transcript = transcriptAsText(labeled)
   const lang = args.language === 'es' ? 'Spanish' : 'English'
 
   const system = [

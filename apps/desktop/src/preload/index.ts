@@ -1,11 +1,21 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Settings, Meeting, MeetingSummary, ChatTurn, ChatCitation } from '../shared/types'
+import type {
+  Settings,
+  Meeting,
+  MeetingSummary,
+  ChatTurn,
+  ChatCitation,
+  CapturableWindow
+} from '../shared/types'
 
 const api = {
   settings: {
     get: (): Promise<Settings> => ipcRenderer.invoke('settings:get'),
     save: (partial: Partial<Settings>): Promise<Settings> =>
       ipcRenderer.invoke('settings:save', partial)
+  },
+  windows: {
+    list: (): Promise<CapturableWindow[]> => ipcRenderer.invoke('windows:list')
   },
   meetings: {
     list: (): Promise<MeetingSummary[]> => ipcRenderer.invoke('meetings:list'),
@@ -17,7 +27,8 @@ const api = {
     delete: (id: string): Promise<Meeting | null> => ipcRenderer.invoke('meetings:delete', id)
   },
   recording: {
-    start: (): Promise<{ meetingId: string }> => ipcRenderer.invoke('recording:start'),
+    start: (opts?: { windowId?: number }): Promise<{ meetingId: string; windowId: number | null }> =>
+      ipcRenderer.invoke('recording:start', opts),
     stop: (id: string): Promise<any> => ipcRenderer.invoke('recording:stop', id),
     active: (): Promise<string[]> => ipcRenderer.invoke('recording:active')
   },

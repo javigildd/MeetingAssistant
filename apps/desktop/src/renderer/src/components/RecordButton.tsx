@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { refreshMeetings, useStore } from '../store'
+import WindowPicker from './WindowPicker'
 
 export default function RecordButton() {
   const navigate = useNavigate()
@@ -7,10 +9,12 @@ export default function RecordButton() {
   const setRecording = useStore((s) => s.setRecording)
   const resetRecording = useStore((s) => s.resetRecording)
   const isRecording = recording.meetingId !== null
+  const [pickerOpen, setPickerOpen] = useState(false)
 
-  async function start() {
+  async function startWithWindow(windowId: number | null) {
+    setPickerOpen(false)
     try {
-      const r = await window.api.recording.start()
+      const r = await window.api.recording.start(windowId ? { windowId } : undefined)
       setRecording({
         meetingId: r.meetingId,
         startedAt: Date.now(),
@@ -21,6 +25,10 @@ export default function RecordButton() {
     } catch (err) {
       setRecording({ lastError: (err as Error).message })
     }
+  }
+
+  function start() {
+    setPickerOpen(true)
   }
 
   async function stop() {
@@ -38,21 +46,30 @@ export default function RecordButton() {
     await refreshMeetings()
   }
 
-  return isRecording ? (
-    <button
-      onClick={stop}
-      className="no-drag flex items-center justify-center gap-2 bg-accent-600 hover:bg-accent-500 text-white rounded-md py-2 text-sm font-medium"
-    >
-      <span className="w-2 h-2 rounded-full bg-white animate-record"></span>
-      Stop recording
-    </button>
-  ) : (
-    <button
-      onClick={start}
-      className="no-drag flex items-center justify-center gap-2 bg-accent-500 hover:bg-accent-400 text-white rounded-md py-2 text-sm font-medium"
-    >
-      <span className="w-2 h-2 rounded-full bg-white"></span>
-      Record a meeting
-    </button>
+  return (
+    <>
+      {isRecording ? (
+        <button
+          onClick={stop}
+          className="no-drag flex items-center justify-center gap-2 bg-accent-600 hover:bg-accent-500 text-white rounded-md py-2 text-sm font-medium"
+        >
+          <span className="w-2 h-2 rounded-full bg-white animate-record"></span>
+          Stop recording
+        </button>
+      ) : (
+        <button
+          onClick={start}
+          className="no-drag flex items-center justify-center gap-2 bg-accent-500 hover:bg-accent-400 text-white rounded-md py-2 text-sm font-medium"
+        >
+          <span className="w-2 h-2 rounded-full bg-white"></span>
+          Record a meeting
+        </button>
+      )}
+      <WindowPicker
+        open={pickerOpen}
+        onCancel={() => setPickerOpen(false)}
+        onPick={startWithWindow}
+      />
+    </>
   )
 }

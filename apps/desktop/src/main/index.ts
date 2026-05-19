@@ -13,11 +13,18 @@ import {
   insertSegments,
   insertEmbeddings,
   renameSpeaker,
+  mergeSpeakerAliases,
   updateMeetingTitle,
   deleteMeeting,
   setEmbeddingDim
 } from './db'
-import { startRecorder, stopRecorder, type RecorderSession } from './recorder'
+import { detectSpeakerNames, deleteFrames } from './vision'
+import {
+  startRecorder,
+  stopRecorder,
+  listCapturableWindows,
+  type RecorderSession
+} from './recorder'
 import { runPipeline } from './pipeline'
 import { summarizeMeeting, embed, chat, chunkSegmentsForRag, EMBED_DIM } from './ai'
 import type { Settings, ChatTurn } from '../shared/types'
@@ -49,6 +56,32 @@ async function processMeeting(meetingId: string, meetingDir: string): Promise<vo
   // 2) Persist segments
   const segmentIds = insertSegments(meetingId, transcript.segments)
 
+  // 2b) Vision-based name detection (only if we have frames and an OpenAI key)
+  let detectedAliases: Record<string, string> = {}
+  if (settings.openaiKey?.trim()) {
+    try {
+      emitToRenderer('meeting:status', { meetingId, status: 'summarizing' })
+      emitToRenderer('pipeline:event', {
+        meetingId,
+        status: 'detecting_names',
+        message: 'Looking for participant names in the meeting window…'
+      })
+      detectedAliases = await detectSpeakerNames({
+        apiKey: settings.openaiKey,
+        meetingDir,
+        segments: transcript.segments,
+        language: transcript.meta.language
+      })
+      if (Object.keys(detectedAliases).length > 0) {
+        mergeSpeakerAliases(meetingId, detectedAliases)
+      }
+    } catch (err) {
+      console.warn('[vision] failed:', (err as Error).message)
+    }
+    // Clean up frames either way (they're big).
+    deleteFrames(meetingDir)
+  }
+
   // 3) Summarize + embed (requires OpenAI key)
   if (!settings.openaiKey?.trim()) {
     finalizeMeeting({
@@ -77,7 +110,8 @@ async function processMeeting(meetingId: string, meetingDir: string): Promise<vo
     const post = await summarizeMeeting({
       apiKey: settings.openaiKey,
       language: transcript.meta.language,
-      segments: transcript.segments
+      segments: transcript.segments,
+      speakerAliases: detectedAliases
     })
     finalizeMeeting({
       id: meetingId,
@@ -197,12 +231,15 @@ function registerIpc(): void {
     return m
   })
 
+  // ----- windows enumeration (for the meeting-window picker)
+  ipcMain.handle('windows:list', () => listCapturableWindows())
+
   // ----- recording lifecycle
-  ipcMain.handle('recording:start', async () => {
+  ipcMain.handle('recording:start', async (_e, opts?: { windowId?: number }) => {
     const settings = loadSettings()
     const dataDir = ensureDataDir(settings)
     const meetingId = `${Date.now()}-${randomUUID().slice(0, 8)}`
-    const session = startRecorder({ dataDir, meetingId })
+    const session = startRecorder({ dataDir, meetingId, windowId: opts?.windowId })
     activeRecordings.set(meetingId, session)
     const title = new Date().toLocaleString()
     createMeeting({ id: meetingId, title, meetingDir: session.meetingDir })
@@ -211,7 +248,7 @@ function registerIpc(): void {
       emitToRenderer('recorder:event', { meetingId, ...evt })
     })
 
-    return { meetingId }
+    return { meetingId, windowId: opts?.windowId ?? null }
   })
 
   ipcMain.handle('recording:stop', async (_e, meetingId: string) => {

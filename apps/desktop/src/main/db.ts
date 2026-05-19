@@ -238,6 +238,23 @@ export function renameSpeaker(meetingId: string, original: string, displayName: 
     .run(JSON.stringify(aliases), meetingId)
 }
 
+/** Merge multiple aliases at once. Existing manual aliases (set by the user)
+ * win over auto-detected ones, so we never overwrite a name the user typed. */
+export function mergeSpeakerAliases(
+  meetingId: string,
+  detected: Record<string, string>
+): Record<string, string> {
+  const row = getDb().prepare(`SELECT speaker_aliases_json FROM meetings WHERE id=?`).get(meetingId) as any
+  const existing: Record<string, string> = row?.speaker_aliases_json
+    ? JSON.parse(row.speaker_aliases_json)
+    : {}
+  const merged = { ...detected, ...existing }
+  getDb()
+    .prepare(`UPDATE meetings SET speaker_aliases_json=? WHERE id=?`)
+    .run(JSON.stringify(merged), meetingId)
+  return merged
+}
+
 export function updateMeetingTitle(meetingId: string, title: string): void {
   getDb().prepare(`UPDATE meetings SET title=? WHERE id=?`).run(title, meetingId)
 }
