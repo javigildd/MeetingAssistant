@@ -29,7 +29,10 @@ export default defineConfig({
     },
     build: {
       rollupOptions: {
-        input: { index: path.resolve(__dirname, 'src/renderer/index.html') }
+        input: {
+          index: path.resolve(__dirname, 'src/renderer/index.html'),
+          overlay: path.resolve(__dirname, 'src/renderer/overlay.html')
+        }
       }
     }
   }

@@ -29,12 +29,14 @@ import { runPipeline } from './pipeline'
 import { summarizeMeeting, embed, chat, chunkSegmentsForRag, EMBED_DIM } from './ai'
 import { CallDetector, type DetectedCall } from './callDetector'
 import { notifyCallDetected } from './notifications'
+import { OverlayWindow } from './overlay'
 import type { Settings, ChatTurn } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
 const activeRecordings = new Map<string, RecorderSession>()
 let callDetector: CallDetector | null = null
 let lastCallList: DetectedCall[] = []
+const overlay = new OverlayWindow()
 
 /**
  * Runs WhisperX transcription + diarization, then (if an OpenAI key is set)
@@ -224,6 +226,7 @@ function registerIpc(): void {
       callDetector = null
       lastCallList = []
       emitToRenderer('call:update', { calls: [] })
+      overlay.hide()
     } else if (!callDetector) {
       startCallDetector()
     }
@@ -321,7 +324,12 @@ function startCallDetector(): void {
     // Suppress while a recording is active — no point offering to start a
     // recording when one is already running.
     const suppressed = activeRecordings.size > 0
-    emitToRenderer('call:update', { calls: suppressed ? [] : calls })
+    const visible = suppressed ? [] : calls
+    emitToRenderer('call:update', { calls: visible })
+    // Floating overlay mirrors the toast: visible while there's something
+    // to surface, hidden otherwise.
+    if (visible.length > 0) overlay.show()
+    else overlay.hide()
   })
   // Fire a native macOS notification on the *first* sighting of each call.
   // The polling cadence prevents duplicates: a call key only fires onNew
@@ -357,6 +365,7 @@ async function startRecordingFromCall(opts: {
   if (opts.callKey) callDetector?.dismiss(opts.callKey)
   lastCallList = []
   emitToRenderer('call:update', { calls: [] })
+  overlay.hide()
 
   session.events.on((evt) => {
     emitToRenderer('recorder:event', { meetingId, ...evt })
@@ -401,4 +410,5 @@ app.on('before-quit', async () => {
       // ignore
     }
   }
+  overlay.destroy()
 })
