@@ -26,15 +26,16 @@ export default function RecordButton() {
   async function stop() {
     if (!recording.meetingId) return
     const id = recording.meetingId
-    setRecording({ lastStatus: 'stopping' })
+    // Snap the UI back immediately. The pipeline keeps running in the
+    // background and emits status events that update the sidebar.
+    resetRecording()
+    navigate(`/meeting/${id}`)
     try {
       await window.api.recording.stop(id)
     } catch (err) {
-      setRecording({ lastError: (err as Error).message })
-    } finally {
-      resetRecording()
-      await refreshMeetings()
+      console.warn('stop failed:', (err as Error).message)
     }
+    await refreshMeetings()
   }
 
   return isRecording ? (

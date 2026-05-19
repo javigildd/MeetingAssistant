@@ -33,27 +33,24 @@ export class AsyncEventBus {
 }
 
 function resolveRecorderPath(): string {
-  // 1. Bundled (production): resources/bin/marec next to the app
-  const prodPath = path.join(process.resourcesPath || '', 'bin', 'marec')
-  if (fs.existsSync(prodPath)) return prodPath
-
-  // 2. Dev: apps/desktop/resources/bin/marec
-  const devPath = path.join(app.getAppPath(), 'resources', 'bin', 'marec')
-  if (fs.existsSync(devPath)) return devPath
-
-  // 3. Built via swift but not yet copied: apps/recorder-helper/.build/release/marec
-  const swiftBuildPath = path.resolve(
-    app.getAppPath(),
-    '..',
-    'recorder-helper',
-    '.build',
-    'release',
-    'marec'
-  )
-  if (fs.existsSync(swiftBuildPath)) return swiftBuildPath
-
+  // The recorder is shipped as marec.app (a proper bundle) so macOS TCC
+  // can assign stable Screen Recording / Microphone permissions to it.
+  // We exec the binary inside the bundle: marec.app/Contents/MacOS/marec
+  const candidates = [
+    // 1. Bundled (production)
+    path.join(process.resourcesPath || '', 'bin', 'marec.app', 'Contents', 'MacOS', 'marec'),
+    // 2. Dev with .app wrapping (npm run build:recorder)
+    path.join(app.getAppPath(), 'resources', 'bin', 'marec.app', 'Contents', 'MacOS', 'marec'),
+    // 3. Bare binary fallback (legacy build)
+    path.join(app.getAppPath(), 'resources', 'bin', 'marec'),
+    // 4. Direct swift build output
+    path.resolve(app.getAppPath(), '..', 'recorder-helper', '.build', 'release', 'marec')
+  ]
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return p
+  }
   throw new Error(
-    'marec recorder binary not found. Build it with `npm run build:recorder` from the repo root.'
+    'marec.app not found. Build it with `npm run build:recorder` from the repo root.'
   )
 }
 

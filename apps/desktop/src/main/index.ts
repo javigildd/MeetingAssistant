@@ -25,6 +25,89 @@ import type { Settings, ChatTurn } from '../shared/types'
 let mainWindow: BrowserWindow | null = null
 const activeRecordings = new Map<string, RecorderSession>()
 
+/**
+ * Runs WhisperX transcription + diarization, then (if an OpenAI key is set)
+ * generates summary/action items and embeds segments for RAG. Emits status
+ * events for the renderer so the UI can track progress without blocking.
+ */
+async function processMeeting(meetingId: string, meetingDir: string): Promise<void> {
+  const settings = loadSettings()
+
+  // 1) Transcribe + diarize
+  let transcript
+  try {
+    const { events: pEvents, result } = runPipeline({ settings, meetingDir })
+    pEvents.on((evt) => emitToRenderer('pipeline:event', { meetingId, ...evt }))
+    transcript = await result
+  } catch (err) {
+    const msg = (err as Error).message
+    updateMeetingStatus(meetingId, 'failed', msg)
+    emitToRenderer('meeting:status', { meetingId, status: 'failed', error: msg })
+    return
+  }
+
+  // 2) Persist segments
+  const segmentIds = insertSegments(meetingId, transcript.segments)
+
+  // 3) Summarize + embed (requires OpenAI key)
+  if (!settings.openaiKey?.trim()) {
+    finalizeMeeting({
+      id: meetingId,
+      endedAt: Date.now(),
+      duration: transcript.meta.duration,
+      language: transcript.meta.language,
+      summaryMd: null,
+      actionItems: [],
+      decisions: [],
+      topics: []
+    })
+    emitToRenderer('meeting:status', {
+      meetingId,
+      status: 'ready',
+      warning: 'OpenAI key not set — saved transcript only.'
+    })
+    return
+  }
+
+  updateMeetingStatus(meetingId, 'summarizing')
+  emitToRenderer('meeting:status', { meetingId, status: 'summarizing' })
+
+  try {
+    const post = await summarizeMeeting({
+      apiKey: settings.openaiKey,
+      language: transcript.meta.language,
+      segments: transcript.segments
+    })
+    finalizeMeeting({
+      id: meetingId,
+      endedAt: Date.now(),
+      duration: transcript.meta.duration,
+      language: transcript.meta.language,
+      summaryMd: post.summaryMd,
+      actionItems: post.actionItems,
+      decisions: post.decisions,
+      topics: post.topics
+    })
+    if (post.title) updateMeetingTitle(meetingId, post.title)
+
+    // 4) Embed chunks for RAG
+    const chunks = chunkSegmentsForRag(transcript.segments)
+    setEmbeddingDim(EMBED_DIM)
+    const vectors = await embed(
+      settings.openaiKey,
+      chunks.map((c) => c.text)
+    )
+    const segmentRowIds = chunks.map((c) => segmentIds[c.segmentIdx])
+    insertEmbeddings(segmentRowIds, vectors)
+
+    emitToRenderer('meeting:status', { meetingId, status: 'ready' })
+  } catch (err) {
+    const msg = (err as Error).message
+    updateMeetingStatus(meetingId, 'failed', msg)
+    emitToRenderer('meeting:status', { meetingId, status: 'failed', error: msg })
+  }
+}
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -109,96 +192,28 @@ function registerIpc(): void {
   ipcMain.handle('recording:stop', async (_e, meetingId: string) => {
     const session = activeRecordings.get(meetingId)
     if (!session) {
-      throw new Error(`No active recording for ${meetingId}`)
+      // Idempotent — already stopped or never existed. Don't throw, the UI
+      // sometimes hits this if the user double-clicks Stop.
+      return { ok: true, alreadyStopped: true }
     }
     activeRecordings.delete(meetingId)
 
     updateMeetingStatus(meetingId, 'transcribing')
     emitToRenderer('meeting:status', { meetingId, status: 'transcribing' })
 
+    // Wait only for the recorder to stop & flush wavs (~instant to 10s).
+    // The transcription pipeline runs in the background so the UI returns
+    // immediately and the meeting list reflects progress via events.
     await stopRecorder(session)
 
-    const settings = loadSettings()
-
-    // -- Run pipeline (transcribe + diarize)
-    let transcript
-    try {
-      const { events: pEvents, result } = runPipeline({
-        settings,
-        meetingDir: session.meetingDir
-      })
-      pEvents.on((evt) => {
-        emitToRenderer('pipeline:event', { meetingId, ...evt })
-      })
-      transcript = await result
-    } catch (err) {
+    // Fire-and-forget the rest of the pipeline.
+    void processMeeting(meetingId, session.meetingDir).catch((err) => {
       const msg = (err as Error).message
       updateMeetingStatus(meetingId, 'failed', msg)
       emitToRenderer('meeting:status', { meetingId, status: 'failed', error: msg })
-      return { ok: false, error: msg }
-    }
+    })
 
-    // -- Persist segments
-    const segmentIds = insertSegments(meetingId, transcript.segments)
-
-    // -- Summarize + embed (requires OpenAI key)
-    updateMeetingStatus(meetingId, 'summarizing')
-    emitToRenderer('meeting:status', { meetingId, status: 'summarizing' })
-    if (!settings.openaiKey?.trim()) {
-      finalizeMeeting({
-        id: meetingId,
-        endedAt: Date.now(),
-        duration: transcript.meta.duration,
-        language: transcript.meta.language,
-        summaryMd: null,
-        actionItems: [],
-        decisions: [],
-        topics: []
-      })
-      emitToRenderer('meeting:status', {
-        meetingId,
-        status: 'ready',
-        warning: 'OpenAI key not set — saved transcript only.'
-      })
-      return { ok: true, transcript }
-    }
-
-    try {
-      const post = await summarizeMeeting({
-        apiKey: settings.openaiKey,
-        language: transcript.meta.language,
-        segments: transcript.segments
-      })
-      finalizeMeeting({
-        id: meetingId,
-        endedAt: Date.now(),
-        duration: transcript.meta.duration,
-        language: transcript.meta.language,
-        summaryMd: post.summaryMd,
-        actionItems: post.actionItems,
-        decisions: post.decisions,
-        topics: post.topics
-      })
-      if (post.title) updateMeetingTitle(meetingId, post.title)
-
-      // -- Embed chunks for RAG
-      const chunks = chunkSegmentsForRag(transcript.segments)
-      setEmbeddingDim(EMBED_DIM)
-      const vectors = await embed(
-        settings.openaiKey,
-        chunks.map((c) => c.text)
-      )
-      const segmentRowIds = chunks.map((c) => segmentIds[c.segmentIdx])
-      insertEmbeddings(segmentRowIds, vectors)
-
-      emitToRenderer('meeting:status', { meetingId, status: 'ready' })
-      return { ok: true, transcript }
-    } catch (err) {
-      const msg = (err as Error).message
-      updateMeetingStatus(meetingId, 'failed', msg)
-      emitToRenderer('meeting:status', { meetingId, status: 'failed', error: msg })
-      return { ok: false, error: msg }
-    }
+    return { ok: true }
   })
 
   ipcMain.handle('recording:active', () => Array.from(activeRecordings.keys()))

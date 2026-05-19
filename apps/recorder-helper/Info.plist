@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>marec</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.javigildd.meetingassistant.marec</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>MeetingAssistant Recorder</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.0.1</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>MeetingAssistant captures your microphone so it can transcribe what you say during your meetings. Audio never leaves your Mac.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>MeetingAssistant captures the audio coming out of your Mac (Zoom, Meet, Slack, etc.) so it can transcribe what the other participants say. Audio never leaves your Mac.</string>
+</dict>
+</plist>
