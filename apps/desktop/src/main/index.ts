@@ -28,7 +28,6 @@ import {
 import { runPipeline } from './pipeline'
 import { summarizeMeeting, embed, chat, chunkSegmentsForRag, EMBED_DIM } from './ai'
 import { CallDetector, type DetectedCall } from './callDetector'
-import { notifyCallDetected } from './notifications'
 import { OverlayWindow } from './overlay'
 import type { Settings, ChatTurn } from '../shared/types'
 
@@ -330,17 +329,6 @@ function startCallDetector(): void {
     // to surface, hidden otherwise.
     if (visible.length > 0) overlay.show()
     else overlay.hide()
-  })
-  // Fire a native macOS notification on the *first* sighting of each call.
-  // The polling cadence prevents duplicates: a call key only fires onNew
-  // once per appearance (it's already in `active` after that).
-  callDetector.onNew((call) => {
-    if (activeRecordings.size > 0) return
-    notifyCallDetected(call, {
-      onRecord: (c) => {
-        void startRecordingFromCall({ windowId: c.windowId, title: c.callerLabel ?? null, callKey: c.key })
-      }
-    })
   })
   callDetector.start()
 }
