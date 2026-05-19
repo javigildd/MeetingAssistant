@@ -126,7 +126,8 @@ function classify(w: CapturableWindow): DetectedCall | null {
 /**
  * Polls macOS windows periodically and emits onChange when the set of active
  * calls changes. Calls that the user dismissed are suppressed until they end
- * and reappear.
+ * and reappear. New calls (first-time appearances) fire a separate onNew
+ * callback for system notifications.
  */
 export class CallDetector {
   private intervalMs: number
@@ -134,10 +135,16 @@ export class CallDetector {
   private active: Map<string, DetectedCall> = new Map()
   private dismissed: Set<string> = new Set()
   private onUpdate: (calls: DetectedCall[]) => void
+  private onNewCall: (call: DetectedCall) => void = () => {}
 
   constructor(onUpdate: (calls: DetectedCall[]) => void, intervalMs = 8_000) {
     this.intervalMs = intervalMs
     this.onUpdate = onUpdate
+  }
+
+  /** Subscribe to first-time appearances of a call (good place to fire a notification). */
+  onNew(fn: (call: DetectedCall) => void): void {
+    this.onNewCall = fn
   }
 
   start(): void {
@@ -181,6 +188,7 @@ export class CallDetector {
       if (!this.active.has(c.key) && !this.dismissed.has(c.key)) {
         this.active.set(c.key, c)
         newCalls.push(c)
+        try { this.onNewCall(c) } catch { /* notification errors shouldn't break polling */ }
       }
     }
 

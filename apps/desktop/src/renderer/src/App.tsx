@@ -39,10 +39,24 @@ export default function App() {
         navigate(`/meeting/${evt.meetingId}`)
       }
     })
+    // Recording started from outside the renderer (system notification).
+    const offRecStarted = window.api.events.onRecordingStarted((evt) => {
+      setRecording({
+        meetingId: evt.meetingId,
+        startedAt: Date.now(),
+        lastStatus: 'starting',
+        lastError: null,
+        micStarted: false,
+        systemStarted: false
+      })
+      navigate('/recording')
+      refreshMeetings()
+    })
     return () => {
       offRec()
       offPipe()
       offStatus()
+      offRecStarted()
     }
   }, [setRecording, setPipeline, navigate])
 

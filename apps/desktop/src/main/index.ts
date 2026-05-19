@@ -28,6 +28,7 @@ import {
 import { runPipeline } from './pipeline'
 import { summarizeMeeting, embed, chat, chunkSegmentsForRag, EMBED_DIM } from './ai'
 import { CallDetector, type DetectedCall } from './callDetector'
+import { notifyCallDetected } from './notifications'
 import type { Settings, ChatTurn } from '../shared/types'
 
 let mainWindow: BrowserWindow | null = null
@@ -261,25 +262,12 @@ function registerIpc(): void {
     _e,
     opts?: { windowId?: number; title?: string; callKey?: string }
   ) => {
-    const settings = loadSettings()
-    const dataDir = ensureDataDir(settings)
-    const meetingId = `${Date.now()}-${randomUUID().slice(0, 8)}`
-    const session = startRecorder({ dataDir, meetingId, windowId: opts?.windowId })
-    activeRecordings.set(meetingId, session)
-    const title = opts?.title?.trim() || new Date().toLocaleString()
-    createMeeting({ id: meetingId, title, meetingDir: session.meetingDir })
-
-    // Suppress the call-detected toast for the window we just started recording.
-    if (opts?.callKey) callDetector?.dismiss(opts.callKey)
-    // Clear any visible toasts while recording.
-    lastCallList = []
-    emitToRenderer('call:update', { calls: [] })
-
-    session.events.on((evt) => {
-      emitToRenderer('recorder:event', { meetingId, ...evt })
+    const r = await startRecordingFromCall({
+      windowId: opts?.windowId,
+      title: opts?.title,
+      callKey: opts?.callKey
     })
-
-    return { meetingId, windowId: opts?.windowId ?? null }
+    return { meetingId: r.meetingId, windowId: opts?.windowId ?? null }
   })
 
   ipcMain.handle('recording:stop', async (_e, meetingId: string) => {
@@ -335,8 +323,54 @@ function startCallDetector(): void {
     const suppressed = activeRecordings.size > 0
     emitToRenderer('call:update', { calls: suppressed ? [] : calls })
   })
+  // Fire a native macOS notification on the *first* sighting of each call.
+  // The polling cadence prevents duplicates: a call key only fires onNew
+  // once per appearance (it's already in `active` after that).
+  callDetector.onNew((call) => {
+    if (activeRecordings.size > 0) return
+    notifyCallDetected(call, {
+      onRecord: (c) => {
+        void startRecordingFromCall({ windowId: c.windowId, title: c.callerLabel ?? null, callKey: c.key })
+      }
+    })
+  })
   callDetector.start()
 }
+
+/**
+ * Starts a recording session for a call. Shared between the IPC handler
+ * (renderer toast button) and the system-notification click handler.
+ */
+async function startRecordingFromCall(opts: {
+  windowId?: number
+  title?: string | null
+  callKey?: string
+}): Promise<{ meetingId: string }> {
+  const settings = loadSettings()
+  const dataDir = ensureDataDir(settings)
+  const meetingId = `${Date.now()}-${randomUUID().slice(0, 8)}`
+  const session = startRecorder({ dataDir, meetingId, windowId: opts.windowId })
+  activeRecordings.set(meetingId, session)
+  const title = opts.title?.trim() || new Date().toLocaleString()
+  createMeeting({ id: meetingId, title, meetingDir: session.meetingDir })
+
+  if (opts.callKey) callDetector?.dismiss(opts.callKey)
+  lastCallList = []
+  emitToRenderer('call:update', { calls: [] })
+
+  session.events.on((evt) => {
+    emitToRenderer('recorder:event', { meetingId, ...evt })
+  })
+
+  // Tell renderer to navigate to the recording screen.
+  emitToRenderer('recording:started', { meetingId, windowId: opts.windowId ?? null })
+
+  return { meetingId }
+}
+
+// Force the app display name so macOS notifications say "MeetingAssistant"
+// instead of "Electron". Must be set before app.whenReady fires.
+app.setName('MeetingAssistant')
 
 app.whenReady().then(() => {
   const settings = loadSettings()

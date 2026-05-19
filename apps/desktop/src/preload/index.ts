@@ -70,6 +70,13 @@ const api = {
       const fn = (_: unknown, evt: any) => cb(evt)
       ipcRenderer.on('call:update', fn)
       return () => ipcRenderer.off('call:update', fn)
+    },
+    /** Fired when a recording is started from outside the renderer (e.g. via
+     * the system notification's Record action). Carries { meetingId, windowId }. */
+    onRecordingStarted: (cb: (evt: { meetingId: string; windowId: number | null }) => void) => {
+      const fn = (_: unknown, evt: any) => cb(evt)
+      ipcRenderer.on('recording:started', fn)
+      return () => ipcRenderer.off('recording:started', fn)
     }
   }
 }
